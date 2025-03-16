@@ -3,6 +3,7 @@ use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     f64,
     rc::Rc,
+    sync::{Arc, RwLock},
 };
 
 use crate::{
@@ -51,8 +52,8 @@ pub struct Solver {
     rows: HashMap<Symbol, Box<Row>>,
     edits: HashMap<Variable, EditInfo>,
     infeasible_rows: Vec<Symbol>, // never contains external symbols
-    objective: Rc<RefCell<Row>>,
-    artificial: Option<Rc<RefCell<Row>>>,
+    objective: Arc<RwLock<Row>>,
+    artificial: Option<Arc<RwLock<Row>>>,
     id_tick: usize,
 }
 
@@ -75,7 +76,7 @@ impl Solver {
             rows: HashMap::new(),
             edits: HashMap::new(),
             infeasible_rows: Vec::new(),
-            objective: Rc::new(RefCell::new(Row::new(0.0))),
+            objective: Arc::new(RwLock::new(Row::new(0.0))),
             artificial: None,
             id_tick: 1,
         }
@@ -377,7 +378,7 @@ impl Solver {
         self.should_clear_changes = false;
         self.edits.clear();
         self.infeasible_rows.clear();
-        *self.objective.borrow_mut() = Row::new(0.0);
+        *self.objective.write().unwrap() = Row::new(0.0);
         self.artificial = None;
         self.id_tick = 1;
     }
@@ -426,7 +427,7 @@ impl Solver {
             }
         }
 
-        let mut objective = self.objective.borrow_mut();
+        let mut objective = self.objective.write().unwrap();
 
         // Add the necessary slack, error, and dummy variables.
         let tag = match constraint.op() {
@@ -527,13 +528,13 @@ impl Solver {
         let art = Symbol::new(self.id_tick, SymbolKind::Slack);
         self.id_tick += 1;
         self.rows.insert(art, Box::new(row.clone()));
-        self.artificial = Some(Rc::new(RefCell::new(row.clone())));
+        self.artificial = Some(Arc::new(RwLock::new(row.clone())));
 
         // Optimize the artificial objective. This is successful
         // only if the artificial objective is optimized to zero.
         let artificial = self.artificial.as_ref().unwrap().clone();
         self.optimize(&artificial)?;
-        let success = near_zero(artificial.borrow().constant);
+        let success = near_zero(artificial.read().unwrap().constant);
         self.artificial = None;
 
         // If the artificial variable is basic, pivot the row so that
@@ -555,7 +556,7 @@ impl Solver {
         for row in self.rows.values_mut() {
             row.remove(art);
         }
-        self.objective.borrow_mut().remove(art);
+        self.objective.write().unwrap().remove(art);
         Ok(success)
     }
 
@@ -579,9 +580,9 @@ impl Solver {
                 self.infeasible_rows.push(other_symbol);
             }
         }
-        self.objective.borrow_mut().substitute(symbol, row);
+        self.objective.write().unwrap().substitute(symbol, row);
         if let Some(artificial) = self.artificial.as_ref() {
-            artificial.borrow_mut().substitute(symbol, row);
+            artificial.write().unwrap().substitute(symbol, row);
         }
     }
 
@@ -589,9 +590,9 @@ impl Solver {
     ///
     /// This method performs iterations of Phase 2 of the simplex method
     /// until the objective function reaches a minimum.
-    fn optimize(&mut self, objective: &RefCell<Row>) -> Result<(), InternalSolverError> {
+    fn optimize(&mut self, objective: &RwLock<Row>) -> Result<(), InternalSolverError> {
         loop {
-            let entering = Solver::get_entering_symbol(&objective.borrow());
+            let entering = Solver::get_entering_symbol(&objective.read().unwrap());
             if entering.kind() == SymbolKind::Invalid {
                 return Ok(());
             }
@@ -671,7 +672,7 @@ impl Solver {
     fn get_dual_entering_symbol(&self, row: &Row) -> Symbol {
         let mut entering = Symbol::invalid();
         let mut ratio = f64::INFINITY;
-        let objective = self.objective.borrow();
+        let objective = self.objective.read().unwrap();
         for (symbol, value) in &row.cells {
             if *value > 0.0 && symbol.kind() != SymbolKind::Dummy {
                 let coeff = objective.coefficient_for(*symbol);
@@ -788,9 +789,9 @@ impl Solver {
     /// Remove the effects of an error marker on the objective function.
     fn remove_marker_effects(&mut self, marker: Symbol, strength: f64) {
         if let Some(row) = self.rows.get(&marker) {
-            self.objective.borrow_mut().insert_row(row, -strength);
+            self.objective.write().unwrap().insert_row(row, -strength);
         } else {
-            self.objective.borrow_mut().insert_symbol(marker, -strength);
+            self.objective.write().unwrap().insert_symbol(marker, -strength);
         }
     }
 
